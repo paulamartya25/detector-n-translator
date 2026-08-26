@@ -181,6 +181,27 @@ class FaceAnalyzer:
 
     # -- Main capture loop ------------------------------------------------------
 
+    @property
+    def status(self):
+        """Return a human-readable status string for the UI."""
+        if self._if_app:
+            return "InsightFace ready"
+        if self._face_net:
+            return "OpenCV DNN ready"
+        return "Loading face models..."
+
+    def _enhance(self, frame):
+        """
+        CLAHE contrast enhancement — fixes backlit / dark face conditions.
+        Converts to LAB, enhances L channel, converts back to BGR.
+        """
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        l = clahe.apply(l)
+        lab = cv2.merge([l, a, b])
+        return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
     def _loop(self):
         haar = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
@@ -193,13 +214,15 @@ class FaceAnalyzer:
             self._frame_count += 1
 
             if self._frame_count % config.FACE_ANALYSIS_EVERY_N_FRAMES == 0:
+                # Apply CLAHE enhancement to help with backlit / dark faces
+                enhanced = self._enhance(frame)
                 try:
                     if self._if_app:
-                        results = self._analyze_insightface(frame)
+                        results = self._analyze_insightface(enhanced)
                     elif self._face_net:
-                        results = self._analyze_opencv_dnn(frame, haar)
+                        results = self._analyze_opencv_dnn(enhanced, haar)
                     else:
-                        results = self._analyze_haar(frame, haar)
+                        results = self._analyze_haar(enhanced, haar)
                 except Exception as e:
                     print(f"[FaceAnalyzer] Analysis error: {e}")
                     results = []
@@ -210,6 +233,7 @@ class FaceAnalyzer:
                 with self._lock:
                     results = list(self.latest_results)
 
+            # Draw on original frame (not enhanced) so colours look natural
             annotated = self._draw(frame, results)
             with self._lock:
                 self.latest_frame   = annotated
@@ -218,11 +242,7 @@ class FaceAnalyzer:
     # -- InsightFace Analysis --------------------------------------------------
 
     def _analyze_insightface(self, frame):
-        """
-        Run InsightFace on frame.
-        Returns list of dicts with age, gender, confidence, box.
-        InsightFace returns exact age (e.g. 27) and gender (M/F).
-        """
+        """Run InsightFace SCRFD detector + Genderage model."""
         rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         faces = self._if_app.get(rgb)
 
@@ -231,20 +251,13 @@ class FaceAnalyzer:
             bbox = face.bbox.astype(int)
             x1, y1, x2, y2 = bbox
             w, h = x2 - x1, y2 - y1
-
             if w < 30 or h < 30:
                 continue
-
-            # InsightFace provides:
-            #   face.age    -> int (exact years, e.g. 27)
-            #   face.gender -> 0=Female, 1=Male (or M/F string)
-            #   face.det_score -> float detection confidence
 
             age        = int(getattr(face, "age",    0))
             gender_raw = getattr(face, "gender", 0)
             det_score  = float(getattr(face, "det_score", 1.0))
 
-            # Normalize gender
             if isinstance(gender_raw, str):
                 gender = "Male" if gender_raw.upper() in ("M", "MALE") else "Female"
             else:
@@ -261,7 +274,7 @@ class FaceAnalyzer:
     # -- OpenCV DNN Analysis (fallback) ----------------------------------------
 
     def _analyze_opencv_dnn(self, frame, haar):
-        """SSD face detection + Caffe age/gender."""
+        """SSD ResNet face detection + Caffe age/gender."""
         h, w = frame.shape[:2]
         blob = cv2.dnn.blobFromImage(
             cv2.resize(frame, (300, 300)), 1.0, (300, 300), (104, 177, 123)
@@ -272,14 +285,14 @@ class FaceAnalyzer:
         results = []
         for i in range(dets.shape[2]):
             conf = float(dets[0, 0, i, 2])
-            if conf < 0.5:
+            if conf < 0.45:
                 continue
             x1 = max(0, int(dets[0, 0, i, 3] * w))
             y1 = max(0, int(dets[0, 0, i, 4] * h))
             x2 = min(w, int(dets[0, 0, i, 5] * w))
             y2 = min(h, int(dets[0, 0, i, 6] * h))
             bw, bh = x2 - x1, y2 - y1
-            if bw < 40 or bh < 40:
+            if bw < 35 or bh < 35:
                 continue
 
             pad  = 20
@@ -288,7 +301,7 @@ class FaceAnalyzer:
             if self._age_net and self._gender_net and crop.size > 0:
                 age, gender, gconf = self._predict_ag(crop)
             else:
-                age, gender, gconf = "?", "Unknown", conf * 100
+                age, gender, gconf = "?", "Unknown", round(conf * 100, 1)
 
             results.append({
                 "age": age, "gender": gender,

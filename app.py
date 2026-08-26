@@ -383,12 +383,17 @@ class App(tk.Tk):
                 parts = []
                 for r in results:
                     gender = r["gender"]
-                    age    = r["age"]       # already formatted: "~27y" or "(25-32)" or "?"
+                    age    = r["age"]
                     conf   = r.get("confidence", 0)
                     parts.append(f"{gender}  {age}  ({conf:.0f}% conf)")
                 self._face_info_var.set("  |  ".join(parts))
             else:
-                self._face_info_var.set("No face detected")
+                # Show model loading status if no face detected yet
+                model_status = self._face_analyzer.status
+                if model_status == "Loading face models...":
+                    self._face_info_var.set("⏳ Loading face models... (wait ~2 min first run)")
+                else:
+                    self._face_info_var.set(f"No face detected  [{model_status}]")
 
         self.after(33, self._update_webcam)
 
