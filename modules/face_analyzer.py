@@ -281,17 +281,28 @@ class FaceAnalyzer:
             return "OpenCV DNN ready"
         return "Loading face models..."
 
-    def _enhance(self, frame):
+    def _enhance_for_detection(self, frame):
         """
-        CLAHE contrast enhancement — fixes backlit / dark face conditions.
-        Converts to LAB, enhances L channel, converts back to BGR.
+        Mild CLAHE — used ONLY for face detection (finding bounding boxes).
+        clipLimit=1.5 (was 3.0) so texture is not over-sharpened.
         """
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
         l = clahe.apply(l)
         lab = cv2.merge([l, a, b])
         return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+    def _enhance_for_age(self, frame):
+        """
+        Gamma correction ONLY for age/gender crops — gently brightens without
+        adding fake texture that makes young faces look older.
+        gamma < 1 brightens the image.
+        """
+        gamma = 0.7   # brightens dark/backlit faces gently
+        table = (np.arange(256) / 255.0) ** gamma * 255.0
+        table = np.clip(table, 0, 255).astype(np.uint8)
+        return cv2.LUT(frame, table)
 
     def _loop(self):
         haar = cv2.CascadeClassifier(
@@ -305,15 +316,17 @@ class FaceAnalyzer:
             self._frame_count += 1
 
             if self._frame_count % config.FACE_ANALYSIS_EVERY_N_FRAMES == 0:
-                # Apply CLAHE enhancement to help with backlit / dark faces
-                enhanced = self._enhance(frame)
+                # Mild CLAHE for detection only (finds face position)
+                det_frame = self._enhance_for_detection(frame)
+                # Gamma-brightened original for age/gender (preserves natural texture)
+                age_frame  = self._enhance_for_age(frame)
                 try:
                     if self._if_app:
-                        raw = self._analyze_insightface(enhanced)
+                        raw = self._analyze_insightface(det_frame, age_frame)
                     elif self._face_net:
-                        raw = self._analyze_opencv_dnn(enhanced, haar)
+                        raw = self._analyze_opencv_dnn(det_frame, haar)
                     else:
-                        raw = self._analyze_haar(enhanced, haar)
+                        raw = self._analyze_haar(det_frame, haar)
                 except Exception as e:
                     print(f"[FaceAnalyzer] Analysis error: {e}")
                     raw = []
@@ -324,7 +337,7 @@ class FaceAnalyzer:
                 with self._lock:
                     results = list(self.latest_results)
 
-            # Draw on original frame (not enhanced) so colours look natural
+            # Draw on original frame so colours look natural
             annotated = self._draw(frame, results)
             with self._lock:
                 self.latest_frame   = annotated
@@ -332,22 +345,46 @@ class FaceAnalyzer:
 
     # -- InsightFace Analysis --------------------------------------------------
 
-    def _analyze_insightface(self, frame):
-        """Run InsightFace SCRFD detector + Genderage model."""
-        rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        faces = self._if_app.get(rgb)
+    def _analyze_insightface(self, det_frame, age_frame=None):
+        """
+        Run InsightFace on two frames:
+          det_frame  — mildly CLAHE-enhanced, used for face detection (bounding box)
+          age_frame  — gamma-brightened original, used for age/gender estimation
+        Using the original frame for age/gender avoids texture over-enhancement
+        that makes young faces appear older.
+        """
+        if age_frame is None:
+            age_frame = det_frame
+
+        # Detection on CLAHE-enhanced frame (better at finding the face)
+        rgb_det = cv2.cvtColor(det_frame, cv2.COLOR_BGR2RGB)
+        faces_det = self._if_app.get(rgb_det)
+
+        # Age/gender on gamma-corrected frame (natural texture, more accurate age)
+        rgb_age   = cv2.cvtColor(age_frame, cv2.COLOR_BGR2RGB)
+        faces_age = self._if_app.get(rgb_age)
+
+        # Build index: match age_frame detections to det_frame by closest box
+        def _cx(f): return (f.bbox[0] + f.bbox[2]) / 2
+        def _cy(f): return (f.bbox[1] + f.bbox[3]) / 2
 
         results = []
-        for face in faces:
+        for face in faces_det:
             bbox = face.bbox.astype(int)
             x1, y1, x2, y2 = bbox
             w, h = x2 - x1, y2 - y1
             if w < 30 or h < 30:
                 continue
 
-            age        = int(getattr(face, "age",    0))
-            gender_raw = getattr(face, "gender", 0)
-            det_score  = float(getattr(face, "det_score", 1.0))
+            det_score = float(getattr(face, "det_score", 1.0))
+
+            # Find closest matching face in age_frame run
+            cx, cy = _cx(face), _cy(face)
+            best = min(faces_age, key=lambda f: abs(_cx(f)-cx)+abs(_cy(f)-cy)) \
+                   if faces_age else face
+
+            age        = int(getattr(best, "age",    0))
+            gender_raw = getattr(best, "gender", 0)
 
             if isinstance(gender_raw, str):
                 gender = "Male" if gender_raw.upper() in ("M", "MALE") else "Female"
