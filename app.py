@@ -306,6 +306,49 @@ class App(tk.Tk):
             relief=tk.FLAT, command=self._open_outputs, cursor="hand2",
         ).pack(side=tk.RIGHT, padx=4)
 
+        # ── Audio notification bar ────────────────────────────────────────────
+        # Shown/hidden dynamically after each translation audio is saved
+        self._audio_notify_frame = tk.Frame(right, bg="#1a2e1a", bd=1, relief=tk.SOLID)
+        # (packed dynamically in _show_audio_notification)
+
+        self._audio_file_var = tk.StringVar(value="")
+        tk.Label(
+            self._audio_notify_frame,
+            text="🔊 Audio ready:",
+            font=FONT_SMALL, bg="#1a2e1a", fg=SUCCESS_COLOR,
+        ).pack(side=tk.LEFT, padx=(8, 4), pady=6)
+
+        self._audio_name_label = tk.Label(
+            self._audio_notify_frame,
+            textvariable=self._audio_file_var,
+            font=("Consolas", 9), bg="#1a2e1a", fg=TEXT_COLOR,
+        )
+        self._audio_name_label.pack(side=tk.LEFT, pady=6)
+
+        tk.Button(
+            self._audio_notify_frame,
+            text="▶ Play",
+            font=FONT_SMALL, bg=SUCCESS_COLOR, fg="white",
+            relief=tk.FLAT, padx=8, pady=2,
+            command=self._play_last_audio, cursor="hand2",
+        ).pack(side=tk.RIGHT, padx=4, pady=4)
+
+        tk.Button(
+            self._audio_notify_frame,
+            text="📂 Open",
+            font=FONT_SMALL, bg=PANEL_COLOR, fg=SUBTEXT_COLOR,
+            relief=tk.FLAT, padx=6, pady=2,
+            command=self._open_outputs, cursor="hand2",
+        ).pack(side=tk.RIGHT, padx=(0, 2), pady=4)
+
+        tk.Button(
+            self._audio_notify_frame,
+            text="✕",
+            font=FONT_SMALL, bg="#1a2e1a", fg=SUBTEXT_COLOR,
+            relief=tk.FLAT, padx=4, pady=2,
+            command=self._hide_audio_notification, cursor="hand2",
+        ).pack(side=tk.RIGHT, padx=2, pady=4)
+
         # Status bar
         self._status_var = tk.StringVar(value="⏳  Loading Whisper model…")
         tk.Label(
@@ -511,7 +554,7 @@ class App(tk.Tk):
     # ── Shared output handler ─────────────────────────────────────────────────
 
     def _handle_output(self, original, translated, src_code, tgt_code):
-        """Display transcript in UI and optionally save/play."""
+        """Display transcript in UI and save files based on output mode."""
         self._append_transcript(original, translated, src_code, tgt_code)
         mode = self._output_mode_var.get()
 
@@ -519,10 +562,48 @@ class App(tk.Tk):
             saved = self._tts_handler.save_transcript(
                 original, translated, src_code, tgt_code
             )
-            self._set_status(f"✅  Saved → {os.path.basename(saved)}")
+            self._set_status(f"✅  Transcript saved → {os.path.basename(saved)}")
 
         if mode in ("audio", "both"):
-            self._tts_handler.speak_and_save(translated, lang=tgt_code, play=True)
+            # Save audio file — do NOT auto-play; show notification bar instead
+            audio_path = self._tts_handler.speak_and_save(
+                translated, lang=tgt_code, play=False
+            )
+            # Show the audio-ready notification bar so user can choose to play
+            self.after(800, self._show_audio_notification, audio_path)
+
+    # ── Audio Notification Bar ─────────────────────────────────────────────────
+
+    def _show_audio_notification(self, filepath: str):
+        """Show the green 'Audio ready' bar with Play / Open / Dismiss buttons."""
+        self._last_audio_path = filepath
+        self._audio_file_var.set(os.path.basename(filepath))
+        self._audio_notify_frame.pack(fill=tk.X, pady=(4, 0))
+        self._set_status(f"🔊 Audio saved — click ▶ Play when ready")
+
+    def _hide_audio_notification(self):
+        """Dismiss the audio notification bar."""
+        self._audio_notify_frame.pack_forget()
+
+    def _play_last_audio(self):
+        """Play the last saved audio file via pyttsx3/pygame."""
+        path = getattr(self, "_last_audio_path", None)
+        if not path or not os.path.exists(path):
+            messagebox.showwarning("Not Found", "Audio file not found.")
+            return
+        # Play in background so UI stays responsive
+        import threading
+        import pygame
+        def _play():
+            try:
+                pygame.mixer.music.load(path)
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy():
+                    pygame.time.Clock().tick(5)
+            except Exception as e:
+                print(f"[Playback] Error: {e}")
+        threading.Thread(target=_play, daemon=True).start()
+        self._set_status(f"▶ Playing: {os.path.basename(path)}")
 
     # ══════════════════════════════════════════════════════════════════════════
     #  Language Settings

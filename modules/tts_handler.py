@@ -93,12 +93,12 @@ class TTSHandler:
     def speak_and_save(self,
                        text: str,
                        lang: str = config.DEFAULT_TARGET_LANG,
-                       play: bool = True) -> str:
+                       play: bool = False) -> str:
         """
-        Speak translated text and save as .mp3.
-        - pyttsx3 handles instant playback (if available + voice found)
-        - gTTS always saves .mp3 file for archival
-        Returns saved .mp3 filepath.
+        Convert text to speech and save as .mp3.
+        play=False  → only saves the file (user can play manually)
+        play=True   → saves AND plays immediately
+        Returns the saved .mp3 filepath.
         """
         if not text or not text.strip():
             return ""
