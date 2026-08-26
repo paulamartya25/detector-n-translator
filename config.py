@@ -21,37 +21,44 @@ SUPPORTED_LANGUAGES = {
 
 # ── Whisper Settings ───────────────────────────────────────────────────────────
 # Sizes: tiny < base < small < medium < large
-# Recommendation for CPU-only / degraded battery: "base"
-WHISPER_MODEL_SIZE = "base"
+#
+#   tiny   → 39M params  | ~60% accuracy  | Very fast   (not recommended)
+#   base   → 74M params  | ~75% accuracy  | Fast
+#   small  → 244M params | ~85% accuracy  | ~2x base    ← NOW ACTIVE ✅
+#   medium → 769M params | ~90% accuracy  | Too slow for live CPU use
+#   large  → 1550M params| ~95% accuracy  | Needs GPU
+#
+# First run will auto-download the model (~460 MB for small) and cache it.
+# Subsequent runs load from cache — no re-download needed.
+WHISPER_MODEL_SIZE = "small"   # upgraded from "base" → better Telugu/Hindi accuracy
 
 # ── Face Analysis Settings ─────────────────────────────────────────────────────
-# Analyze every Nth frame (higher = less frequent = less battery drain)
-FACE_ANALYSIS_EVERY_N_FRAMES = 5
+# Analyze every Nth frame (lower = more frequent = better but more CPU)
+FACE_ANALYSIS_EVERY_N_FRAMES = 3   # was 5 → more responsive face updates
 
 # Webcam index (0 = default built-in camera)
 WEBCAM_INDEX = 0
 
 # Minimum gender confidence % to show a result (0–100)
-# Below this threshold the detection is silently discarded
-# Lower this value if face is not being detected (try 40 first, then 30)
-FACE_CONFIDENCE_THRESHOLD = 40   # 40% confidence required
+# Lower if face not detected, raise if getting wrong predictions
+FACE_CONFIDENCE_THRESHOLD = 35   # was 40 → slightly more permissive
 
 # ── VAD (Voice Activity Detection) Settings ────────────────────────────────────
 # RMS energy threshold: values above this = speech, below = silence
-# Typical quiet room: 0.010–0.020   Normal room: 0.025–0.05
-# RAISE this if you see garbage/rubbish transcriptions from background noise
-VAD_ENERGY_THRESHOLD = 0.025   # raised from 0.010 — filters ambient room noise
+# Typical quiet room: 0.015–0.020   Normal room: 0.025–0.035
+# RAISE this if you still see garbage transcriptions from background noise
+VAD_ENERGY_THRESHOLD = 0.025
 
 # Seconds of continuous silence after which a speech segment is finalized
-VAD_SILENCE_DURATION = 1.5
+# Raise this if your speech is being cut off mid-sentence
+VAD_SILENCE_DURATION = 2.0   # was 1.5 → more time for natural pauses
 
 # Minimum audio duration (seconds) to even attempt transcription
 # Clips shorter than this are almost always noise bursts — skip them
-VAD_MIN_SPEECH_DURATION = 1.5
+VAD_MIN_SPEECH_DURATION = 1.0   # was 1.5 → catches shorter phrases too
 
 # Whisper no_speech_prob threshold (0.0–1.0)
-# If Whisper says there's > this probability of NO speech → discard result
-# 0.5 = discard if Whisper is more than 50% sure it heard silence/noise
+# If Whisper says there's > this probability of NO speech → discard
 WHISPER_NO_SPEECH_THRESHOLD = 0.5
 
 # ── Output Settings ────────────────────────────────────────────────────────────
