@@ -380,11 +380,12 @@ class App(tk.Tk):
             self._cam_label.image = photo
 
             if results:
-                parts = [
-                    f"{'Male' if 'man' in r['gender'].lower() else 'Female'}, "
-                    f"~{r['age']}y  ({r.get('confidence', 0):.0f}% conf)"
-                    for r in results
-                ]
+                parts = []
+                for r in results:
+                    gender = r["gender"]
+                    age    = r["age"]       # already formatted: "~27y" or "(25-32)" or "?"
+                    conf   = r.get("confidence", 0)
+                    parts.append(f"{gender}  {age}  ({conf:.0f}% conf)")
                 self._face_info_var.set("  |  ".join(parts))
             else:
                 self._face_info_var.set("No face detected")

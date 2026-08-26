@@ -1,13 +1,13 @@
 """
 modules/face_analyzer.py  v5  — InsightFace + ONNX Runtime
-────────────────────────────────────────────────────────────
+------------------------------------------------------------
 Best accuracy pipeline:
-  Face detection  → SCRFD-10GF        (InsightFace, state-of-the-art 2023)
-  Age/Gender      → Genderage model   (InsightFace buffalo_l pack)
+  Face detection  -> SCRFD-10GF        (InsightFace, state-of-the-art 2023)
+  Age/Gender      -> Genderage model   (InsightFace buffalo_l pack)
 
 Fallback chain if InsightFace unavailable:
-  → OpenCV SSD ResNet (already downloaded)
-  → OpenCV Haar Cascade (zero-download, built in)
+  -> OpenCV SSD ResNet (already downloaded)
+  -> OpenCV Haar Cascade (zero-download, built in)
 
 InsightFace auto-downloads its models (~200 MB) to ~/.insightface/models/
 on first run.
@@ -22,17 +22,17 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import config
 
-# ── Try InsightFace ───────────────────────────────────────────────────────────
+# -- Try InsightFace -----------------------------------------------------------
 _INSIGHTFACE_OK = False
 try:
     import insightface
     from insightface.app import FaceAnalysis as _InsightFaceApp
     _INSIGHTFACE_OK = True
-    print("[FaceAnalyzer] InsightFace available ✓")
+    print("[FaceAnalyzer] InsightFace available OK")
 except ImportError:
     print("[FaceAnalyzer] InsightFace not available — using OpenCV DNN fallback")
 
-# ── OpenCV DNN fallback paths ─────────────────────────────────────────────────
+# -- OpenCV DNN fallback paths -------------------------------------------------
 _MODELS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
 _FACE_PROTO = os.path.join(_MODELS_DIR, "deploy.prototxt")
 _FACE_MODEL = os.path.join(_MODELS_DIR, "res10_300x300_ssd_iter_140000.caffemodel")
@@ -43,7 +43,7 @@ AGE_BUCKETS   = ['(0-2)', '(4-6)', '(8-12)', '(15-20)',
 GENDER_LABELS = ['Male', 'Female']
 _MODEL_MEAN   = (78.4263377603, 87.7689143744, 114.895847746)
 
-# ── Age/Gender DNN fallback model URLs ───────────────────────────────────────
+# -- Age/Gender DNN fallback model URLs ---------------------------------------
 _AG_URLS = {
     os.path.join(_MODELS_DIR, "age_deploy.prototxt"): [
         "https://raw.githubusercontent.com/spmallick/learnopencv/master/AgeGender/age_deploy.prototxt",
@@ -85,7 +85,7 @@ class FaceAnalyzer:
         self.latest_results = []
         self._prev_results  = []
 
-    # ── Public API ─────────────────────────────────────────────────────────────
+    # -- Public API -------------------------------------------------------------
 
     def start(self):
         self._cap = cv2.VideoCapture(config.WEBCAM_INDEX)
@@ -116,7 +116,7 @@ class FaceAnalyzer:
             results = list(self.latest_results)
         return frame, results
 
-    # ── InsightFace Loader ────────────────────────────────────────────────────
+    # -- InsightFace Loader ----------------------------------------------------
 
     def _load_insightface(self):
         """Load InsightFace buffalo_l model pack (downloads ~200MB on first run)."""
@@ -130,13 +130,13 @@ class FaceAnalyzer:
                         det_size=(640, 640),
                         det_thresh=0.45)
             self._if_app = app
-            print("[FaceAnalyzer] ✓ InsightFace ready — SCRFD + Age/Gender loaded")
+            print("[FaceAnalyzer] OK InsightFace ready — SCRFD + Age/Gender loaded")
         except Exception as e:
             print(f"[FaceAnalyzer] InsightFace load failed: {e}")
             print("[FaceAnalyzer] Falling back to OpenCV DNN…")
             self._load_opencv_dnn()
 
-    # ── OpenCV DNN Loader (fallback) ──────────────────────────────────────────
+    # -- OpenCV DNN Loader (fallback) ------------------------------------------
 
     def _load_opencv_dnn(self):
         """Load OpenCV SSD + Age/Gender Caffe models."""
@@ -146,7 +146,7 @@ class FaceAnalyzer:
         if os.path.exists(_FACE_MODEL) and os.path.exists(_FACE_PROTO):
             try:
                 self._face_net = cv2.dnn.readNet(_FACE_MODEL, _FACE_PROTO)
-                print("[FaceAnalyzer] ✓ SSD face detector ready")
+                print("[FaceAnalyzer] OK SSD face detector ready")
             except Exception as e:
                 print(f"[FaceAnalyzer] SSD load failed: {e}")
 
@@ -161,7 +161,7 @@ class FaceAnalyzer:
                             print(f"[FaceAnalyzer] Downloading {fname}…")
                             urllib.request.urlretrieve(url, path)
                             size = os.path.getsize(path) / 1e6
-                            print(f"[FaceAnalyzer] ✓ {fname} ({size:.1f} MB)")
+                            print(f"[FaceAnalyzer] OK {fname} ({size:.1f} MB)")
                             break
                         except Exception as e:
                             print(f"[FaceAnalyzer] Download failed: {e}")
@@ -175,11 +175,11 @@ class FaceAnalyzer:
             try:
                 self._age_net    = cv2.dnn.readNet(age_m, age_p)
                 self._gender_net = cv2.dnn.readNet(gender_m, gender_p)
-                print("[FaceAnalyzer] ✓ Age/Gender Caffe models ready")
+                print("[FaceAnalyzer] OK Age/Gender Caffe models ready")
             except Exception as e:
                 print(f"[FaceAnalyzer] Age/Gender load failed: {e}")
 
-    # ── Main capture loop ──────────────────────────────────────────────────────
+    # -- Main capture loop ------------------------------------------------------
 
     def _loop(self):
         haar = cv2.CascadeClassifier(
@@ -215,7 +215,7 @@ class FaceAnalyzer:
                 self.latest_frame   = annotated
                 self.latest_results = results
 
-    # ── InsightFace Analysis ──────────────────────────────────────────────────
+    # -- InsightFace Analysis --------------------------------------------------
 
     def _analyze_insightface(self, frame):
         """
@@ -236,9 +236,9 @@ class FaceAnalyzer:
                 continue
 
             # InsightFace provides:
-            #   face.age    → int (exact years, e.g. 27)
-            #   face.gender → 0=Female, 1=Male (or M/F string)
-            #   face.det_score → float detection confidence
+            #   face.age    -> int (exact years, e.g. 27)
+            #   face.gender -> 0=Female, 1=Male (or M/F string)
+            #   face.det_score -> float detection confidence
 
             age        = int(getattr(face, "age",    0))
             gender_raw = getattr(face, "gender", 0)
@@ -258,7 +258,7 @@ class FaceAnalyzer:
             })
         return results
 
-    # ── OpenCV DNN Analysis (fallback) ────────────────────────────────────────
+    # -- OpenCV DNN Analysis (fallback) ----------------------------------------
 
     def _analyze_opencv_dnn(self, frame, haar):
         """SSD face detection + Caffe age/gender."""
@@ -307,7 +307,7 @@ class FaceAnalyzer:
         age = AGE_BUCKETS[int(np.argmax(ap))]
         return age, gender, gconf
 
-    # ── Haar Cascade (last resort) ────────────────────────────────────────────
+    # -- Haar Cascade (last resort) --------------------------------------------
 
     def _analyze_haar(self, frame, cascade):
         gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -316,7 +316,7 @@ class FaceAnalyzer:
                  "confidence": 100.0, "box": (x, y, w, h)}
                 for (x, y, w, h) in faces] if len(faces) > 0 else []
 
-    # ── Drawing ───────────────────────────────────────────────────────────────
+    # -- Drawing ---------------------------------------------------------------
 
     def _draw(self, frame, results):
         out = frame.copy()
@@ -337,7 +337,7 @@ class FaceAnalyzer:
         return out
 
 
-# ── Drawing helpers ───────────────────────────────────────────────────────────
+# -- Drawing helpers -----------------------------------------------------------
 
 def _draw_corner_box(img, x, y, w, h, color, t=2, cl=18):
     x2, y2 = x + w, y + h
