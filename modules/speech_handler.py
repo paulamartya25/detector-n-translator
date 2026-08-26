@@ -205,12 +205,24 @@ class SpeechHandler:
     # ── Shared Transcription ───────────────────────────────────────────────────
 
     def _transcribe(self, chunks: list) -> str:
-        """Concatenate audio chunks, save WAV, run Whisper, return text."""
+        """
+        Concatenate audio chunks, save WAV, run Whisper, return clean text.
+
+        Filters applied (in order):
+          1. Skip clips shorter than VAD_MIN_SPEECH_DURATION seconds
+          2. Discard if Whisper's no_speech_prob exceeds threshold
+          3. Discard if text looks like hallucinated garbage
+        """
         if not chunks:
             return ""
+
         audio_data = np.concatenate(chunks, axis=0).flatten()
-        if len(audio_data) < config.AUDIO_SAMPLE_RATE * 0.5:
-            return ""   # less than 0.5 s — ignore
+
+        # ── Guard 1: minimum duration ─────────────────────────────────────────
+        duration = len(audio_data) / config.AUDIO_SAMPLE_RATE
+        if duration < config.VAD_MIN_SPEECH_DURATION:
+            print(f"[Speech] Clip too short ({duration:.1f}s) — skipped")
+            return ""
 
         audio_int16 = (audio_data * 32767).astype(np.int16)
         wav_write(config.TEMP_AUDIO_FILE, config.AUDIO_SAMPLE_RATE, audio_int16)
@@ -221,7 +233,84 @@ class SpeechHandler:
         result = self._model.transcribe(
             config.TEMP_AUDIO_FILE,
             language=self.source_lang,
-            fp16=False,   # CPU safe
+            fp16=False,
             verbose=False,
+            condition_on_previous_text=False,  # reduces hallucination chaining
         )
-        return result.get("text", "").strip()
+
+        # ── Guard 2: no_speech_prob check ────────────────────────────────────
+        # Whisper scores each segment; average them
+        segments = result.get("segments", [])
+        if segments:
+            avg_no_speech = sum(s.get("no_speech_prob", 0) for s in segments) / len(segments)
+            if avg_no_speech > config.WHISPER_NO_SPEECH_THRESHOLD:
+                print(f"[Speech] Discarded — no_speech_prob={avg_no_speech:.2f} "
+                      f"(threshold={config.WHISPER_NO_SPEECH_THRESHOLD})")
+                return ""
+
+        text = result.get("text", "").strip()
+
+        # ── Guard 3: hallucination filter ─────────────────────────────────────
+        if _is_hallucination(text):
+            print(f"[Speech] Discarded hallucination: '{text[:60]}'")
+            return ""
+
+        return text
+
+
+def _is_hallucination(text: str) -> bool:
+    """
+    Detect common Whisper hallucination patterns:
+    - Text is too short (single word from noise)
+    - Contains high ratio of non-target-script characters
+    - Matches known Whisper noise phrases
+    """
+    if not text:
+        return True
+
+    # Known Whisper hallucination phrases (appear when fed silence/noise)
+    KNOWN_HALLUCINATIONS = {
+        "you", "thank you", "thanks", "thank you.", "thanks.",
+        "www.", ".com", "subtitles", "subscribe", "like and subscribe",
+        "bye", "bye.", "okay", "ok.", "hmm", "um", "uh",
+    }
+    if text.lower().strip(".!? ") in KNOWN_HALLUCINATIONS:
+        return True
+
+    # Too short — less than 3 words is likely noise
+    words = text.split()
+    if len(words) < 2:
+        return True
+
+    # High proportion of non-Latin / mixed-script garbage characters
+    # (real speech in one language shouldn't mix 4+ scripts)
+    import unicodedata
+    scripts = set()
+    for ch in text:
+        if ch.isalpha():
+            try:
+                name = unicodedata.name(ch, "")
+                if "LATIN" in name:
+                    scripts.add("LATIN")
+                elif "ARABIC" in name:
+                    scripts.add("ARABIC")
+                elif "HANGUL" in name:
+                    scripts.add("HANGUL")
+                elif "CYRILLIC" in name:
+                    scripts.add("CYRILLIC")
+                elif "CJK" in name:
+                    scripts.add("CJK")
+                elif "THAI" in name:
+                    scripts.add("THAI")
+                elif "DEVANAGARI" in name:
+                    scripts.add("DEVANAGARI")
+                elif "TELUGU" in name:
+                    scripts.add("TELUGU")
+            except Exception:
+                pass
+    # If 3+ different scripts appear in one utterance → garbage
+    if len(scripts) >= 3:
+        return True
+
+    return False
+

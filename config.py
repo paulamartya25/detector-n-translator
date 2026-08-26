@@ -38,11 +38,21 @@ FACE_CONFIDENCE_THRESHOLD = 40   # 40% confidence required
 
 # ── VAD (Voice Activity Detection) Settings ────────────────────────────────────
 # RMS energy threshold: values above this = speech, below = silence
-# Typical quiet room: 0.005–0.01   Loud room: 0.02–0.05
-VAD_ENERGY_THRESHOLD = 0.01
+# Typical quiet room: 0.010–0.020   Normal room: 0.025–0.05
+# RAISE this if you see garbage/rubbish transcriptions from background noise
+VAD_ENERGY_THRESHOLD = 0.025   # raised from 0.010 — filters ambient room noise
 
 # Seconds of continuous silence after which a speech segment is finalized
 VAD_SILENCE_DURATION = 1.5
+
+# Minimum audio duration (seconds) to even attempt transcription
+# Clips shorter than this are almost always noise bursts — skip them
+VAD_MIN_SPEECH_DURATION = 1.5
+
+# Whisper no_speech_prob threshold (0.0–1.0)
+# If Whisper says there's > this probability of NO speech → discard result
+# 0.5 = discard if Whisper is more than 50% sure it heard silence/noise
+WHISPER_NO_SPEECH_THRESHOLD = 0.5
 
 # ── Output Settings ────────────────────────────────────────────────────────────
 DEFAULT_OUTPUT_MODE     = "both"
