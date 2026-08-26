@@ -148,13 +148,16 @@ class TTSHandler:
     def _worker(self, text: str, lang: str, filepath: str, play: bool):
         """
         Background worker:
-          1. Try pyttsx3 for instant playback
-          2. Save gTTS .mp3 for archival (and as audio fallback)
+          1. pyttsx3 for English/Latin-script only (instant, offline)
+          2. gTTS for ALL languages — saves .mp3 and plays via pygame
+             (gTTS supports Hindi, Telugu, Urdu, Tamil etc.)
         """
+        # Languages that pyttsx3 can speak on Windows (has system voices)
+        PYTTSX3_LANGS = {"en", "fr", "de", "es", "it", "pt"}
         spoken_by_pyttsx3 = False
 
-        # ── Step 1: pyttsx3 instant playback ──────────────────────────────────
-        if play and self._pyttsx3_engine:
+        # ── Step 1: pyttsx3 for English/Latin only ────────────────────────────
+        if play and self._pyttsx3_engine and lang in PYTTSX3_LANGS:
             with self._pyttsx3_lock:
                 try:
                     voice_id = _find_pyttsx3_voice(self._pyttsx3_engine, lang)
@@ -163,25 +166,46 @@ class TTSHandler:
                     self._pyttsx3_engine.say(text)
                     self._pyttsx3_engine.runAndWait()
                     spoken_by_pyttsx3 = True
+                    print(f"[TTSHandler] pyttsx3 spoke ({lang})")
                 except Exception as e:
-                    print(f"[TTSHandler] pyttsx3 speak failed: {e}")
+                    print(f"[TTSHandler] pyttsx3 failed: {e}")
 
-        # ── Step 2: gTTS save .mp3 (always, for archive) ──────────────────────
+        # ── Step 2: gTTS → .mp3 (all languages, always saved) ────────────────
         try:
-            tts = gTTS(text=text, lang=lang, slow=False)
+            # Map ISO codes that gTTS needs differently
+            GTTS_LANG_MAP = {
+                "te": "te",  # Telugu
+                "hi": "hi",  # Hindi
+                "ur": "ur",  # Urdu
+                "ta": "ta",  # Tamil
+                "kn": "kn",  # Kannada
+                "ml": "ml",  # Malayalam
+                "bn": "bn",  # Bengali
+                "mr": "mr",  # Marathi
+                "gu": "gu",  # Gujarati
+                "pa": "pa",  # Punjabi
+            }
+            gtts_lang = GTTS_LANG_MAP.get(lang, lang)
+            tts = gTTS(text=text, lang=gtts_lang, slow=False)
             tts.save(filepath)
+            print(f"[TTSHandler] Saved audio: {os.path.basename(filepath)}")
 
-            # Play via pygame only if pyttsx3 didn't speak
+            # Play via pygame if: play=True AND pyttsx3 didn't handle it
             if play and not spoken_by_pyttsx3:
                 self._playing = True
-                pygame.mixer.music.load(filepath)
-                pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy():
-                    pygame.time.Clock().tick(5)
-                self._playing = False
+                try:
+                    pygame.mixer.music.load(filepath)
+                    pygame.mixer.music.play()
+                    while pygame.mixer.music.get_busy():
+                        pygame.time.Clock().tick(5)
+                    print(f"[TTSHandler] Playback done ({lang})")
+                except Exception as pe:
+                    print(f"[TTSHandler] pygame playback failed: {pe}")
+                finally:
+                    self._playing = False
 
         except Exception as e:
-            print(f"[TTSHandler] gTTS failed: {e}")
+            print(f"[TTSHandler] gTTS error: {e}")
 
     def _generate_filepath(self, lang: str) -> str:
         ts  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

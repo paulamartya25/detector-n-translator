@@ -571,21 +571,22 @@ class App(tk.Tk):
             self._set_status(f"✅  Transcript saved → {os.path.basename(saved)}")
 
         if mode in ("audio", "both"):
-            # Save audio file — do NOT auto-play; show notification bar instead
+            # Save audio and auto-play immediately
             audio_path = self._tts_handler.speak_and_save(
-                translated, lang=tgt_code, play=False
+                translated, lang=tgt_code, play=True   # auto-play on translation
             )
-            # Show the audio-ready notification bar so user can choose to play
-            self.after(800, self._show_audio_notification, audio_path)
+            # Also show notification bar so user can replay or open the folder
+            if audio_path:
+                self.after(200, self._show_audio_notification, audio_path)
 
     # ── Audio Notification Bar ─────────────────────────────────────────────────
 
     def _show_audio_notification(self, filepath: str):
-        """Show the green 'Audio ready' bar with Play / Open / Dismiss buttons."""
+        """Show the green 'Audio ready' bar with Replay / Open / Dismiss buttons."""
         self._last_audio_path = filepath
         self._audio_file_var.set(os.path.basename(filepath))
         self._audio_notify_frame.pack(fill=tk.X, pady=(4, 0))
-        self._set_status(f"🔊 Audio saved — click ▶ Play when ready")
+        self._set_status(f"Audio played + saved — click Replay anytime")
 
     def _hide_audio_notification(self):
         """Dismiss the audio notification bar."""
