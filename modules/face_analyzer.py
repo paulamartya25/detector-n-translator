@@ -59,6 +59,95 @@ _AG_URLS = {
     ],
 }
 
+# -- Temporal Smoother ---------------------------------------------------------
+
+from collections import deque
+
+class _ResultSmoother:
+    """
+    Stabilises flickering face detection results across frames.
+
+    For each detected face:
+      - Box coordinates  → exponential moving average (no jumpy boxes)
+      - Age              → rolling integer average over last N frames
+      - Gender           → majority vote over last N frames
+      - Confidence       → rolling average
+
+    If no face is detected for up to HOLD_FRAMES frames, the last
+    known result is shown rather than immediately clearing the label.
+    """
+
+    BUFFER   = 8    # frames to average over
+    HOLD     = 12   # frames to hold last result when face disappears briefly
+    ALPHA    = 0.35 # EMA weight for new box (lower = smoother but more lag)
+
+    def __init__(self):
+        self._ages      = deque(maxlen=self.BUFFER)
+        self._genders   = deque(maxlen=self.BUFFER)
+        self._confs     = deque(maxlen=self.BUFFER)
+        self._box       = None   # (x, y, w, h) as floats
+        self._miss      = 0      # consecutive frames with no detection
+        self._last      = []     # last smoothed result list
+
+    def update(self, results: list) -> list:
+        """Feed raw detection results; return smoothed results."""
+        if results:
+            self._miss = 0
+            r = results[0]   # handle single-face case (most common)
+
+            # Smooth box with EMA
+            x, y, w, h = r["box"]
+            if self._box is None:
+                self._box = (float(x), float(y), float(w), float(h))
+            else:
+                bx, by, bw, bh = self._box
+                self._box = (
+                    bx + self.ALPHA * (x - bx),
+                    by + self.ALPHA * (y - by),
+                    bw + self.ALPHA * (w - bw),
+                    bh + self.ALPHA * (h - bh),
+                )
+
+            # Buffer age/gender/conf
+            raw_age = r["age"]
+            try:
+                age_int = int("".join(filter(str.isdigit, str(raw_age))))
+            except (ValueError, TypeError):
+                age_int = 0
+            self._ages.append(age_int)
+            self._genders.append(r["gender"])
+            self._confs.append(r.get("confidence", 0))
+
+            # Build smoothed result
+            avg_age  = int(round(sum(self._ages) / len(self._ages)))
+            gender   = max(set(self._genders), key=list(self._genders).count)
+            avg_conf = sum(self._confs) / len(self._confs)
+            sx, sy, sw, sh = self._box
+
+            smoothed = [{
+                "age":        f"~{avg_age}y",
+                "gender":     gender,
+                "confidence": round(avg_conf, 1),
+                "box":        (int(sx), int(sy), int(sw), int(sh)),
+            }]
+            # Carry through extra faces unchanged
+            smoothed += results[1:]
+            self._last = smoothed
+            return smoothed
+
+        else:
+            # No detection this frame — hold previous result briefly
+            self._miss += 1
+            if self._miss <= self.HOLD:
+                return self._last   # show last known result
+            # Too many misses — clear everything
+            self._box  = None
+            self._ages.clear()
+            self._genders.clear()
+            self._confs.clear()
+            self._last = []
+            return []
+
 
 class FaceAnalyzer:
     """
@@ -81,9 +170,11 @@ class FaceAnalyzer:
         self._age_net     = None
         self._gender_net  = None
 
+        # Temporal smoother — stabilises flickering box + age/gender labels
+        self._smoother    = _ResultSmoother()
+
         self.latest_frame   = None
         self.latest_results = []
-        self._prev_results  = []
 
     # -- Public API -------------------------------------------------------------
 
@@ -218,17 +309,17 @@ class FaceAnalyzer:
                 enhanced = self._enhance(frame)
                 try:
                     if self._if_app:
-                        results = self._analyze_insightface(enhanced)
+                        raw = self._analyze_insightface(enhanced)
                     elif self._face_net:
-                        results = self._analyze_opencv_dnn(enhanced, haar)
+                        raw = self._analyze_opencv_dnn(enhanced, haar)
                     else:
-                        results = self._analyze_haar(enhanced, haar)
+                        raw = self._analyze_haar(enhanced, haar)
                 except Exception as e:
                     print(f"[FaceAnalyzer] Analysis error: {e}")
-                    results = []
+                    raw = []
 
-                results = results if results else self._prev_results
-                self._prev_results = results
+                # Smooth: average box coords, age, gender across last N frames
+                results = self._smoother.update(raw)
             else:
                 with self._lock:
                     results = list(self.latest_results)
