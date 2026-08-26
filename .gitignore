@@ -13,6 +13,10 @@ outputs/_temp_recording.wav
 outputs/audio/*.mp3
 outputs/transcripts/*.txt
 
+# Downloaded DNN model binary files (auto-downloaded on first run)
+models/*.caffemodel
+models/*.caffemodel.meta
+
 # IDE
 .vscode/
 .idea/

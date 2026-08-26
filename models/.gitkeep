@@ -1,0 +1,9 @@
+# DNN model files are auto-downloaded here on first run.
+# Caffe model binaries are excluded from git (see .gitignore).
+# Files downloaded:
+#   - deploy.prototxt              (face detector config)
+#   - res10_300x300_ssd_iter_140000.caffemodel  (face detector weights ~10MB)
+#   - age_deploy.prototxt          (age estimator config)
+#   - age_net.caffemodel           (age estimator weights ~450MB)
+#   - gender_deploy.prototxt       (gender classifier config)
+#   - gender_net.caffemodel        (gender classifier weights ~450MB)
