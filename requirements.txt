@@ -1,18 +1,22 @@
 # ── Face Detection & Analysis ─────────────────────────────────────────────────
 opencv-python>=4.8.0
 deepface>=0.0.93
-tf-keras>=2.15.0           # backend for DeepFace
+tf-keras>=2.15.0
+
+# ── Face detection backend (optional but recommended) ─────────────────────────
+mediapipe>=0.10.0          # faster face detection; falls back to opencv if missing
 
 # ── Speech Recognition ─────────────────────────────────────────────────────────
 openai-whisper>=20231117
 sounddevice>=0.4.6
-scipy>=1.11.0              # for wavfile save
+scipy>=1.11.0
 
 # ── Translation ────────────────────────────────────────────────────────────────
 deep-translator>=1.11.4
 
 # ── Text-to-Speech ─────────────────────────────────────────────────────────────
-gTTS>=2.5.0
+pyttsx3>=2.90              # offline, instant TTS (primary)
+gTTS>=2.5.0                # online TTS — saves .mp3 for archive (fallback)
 
 # ── Audio Playback ─────────────────────────────────────────────────────────────
 pygame>=2.5.0

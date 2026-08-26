@@ -1,31 +1,24 @@
 """
-app.py
-──────
-Main entry point for the Face Analysis + Speech Translation System.
-
-Layout:
-  ┌─────────────────────────┬────────────────────────────────┐
-  │   Live Webcam Feed      │   Speech & Translation Panel   │
-  │  (age / gender overlay) │                                │
-  │                         │  [Source Lang]  [Target Lang]  │
-  │                         │  [Output Mode: Transcript/Both]│
-  │                         │                                │
-  │                         │  ● START RECORDING             │
-  │                         │  ■ STOP  RECORDING             │
-  │                         │                                │
-  │                         │  ── Transcript ──              │
-  │                         │  [scrollable text area]        │
-  │                         │                                │
-  │                         │  Status: Ready                 │
-  └─────────────────────────┴────────────────────────────────┘
+app.py  v2
+──────────
+Improvements:
+  • VAD (Auto-listen) toggle — app listens continuously and auto-transcribes
+  • Push-to-record still available for noisy environments
+  • Mic energy level bar (live feedback while listening)
+  • VAD status: Idle / Listening / Speech detected / Processing
+  • Face confidence % shown in info bar
+  • pyttsx3 offline TTS (instant playback)
 """
 
 import os
 import threading
+import datetime
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 from PIL import Image, ImageTk
 import cv2
+import numpy as np
+import sounddevice as sd
 
 # Local modules
 from modules.face_analyzer  import FaceAnalyzer
@@ -35,52 +28,56 @@ from modules.tts_handler    import TTSHandler
 import config
 
 
-# ── Color palette ────────────────────────────────────────────────────────────
-BG_COLOR       = "#1e1e2e"   # dark background
-PANEL_COLOR    = "#2a2a3e"   # slightly lighter panels
-ACCENT         = "#7c3aed"   # purple accent
+# ── Color palette ──────────────────────────────────────────────────────────────
+BG_COLOR       = "#1e1e2e"
+PANEL_COLOR    = "#2a2a3e"
+ACCENT         = "#7c3aed"
 ACCENT_HOVER   = "#6d28d9"
-REC_COLOR      = "#dc2626"   # red for recording
-STOP_COLOR     = "#16a34a"   # green for stop
-TEXT_COLOR     = "#e2e8f0"   # light text
-SUBTEXT_COLOR  = "#94a3b8"   # muted text
+REC_COLOR      = "#dc2626"
+STOP_COLOR     = "#16a34a"
+VAD_COLOR      = "#0ea5e9"     # blue for VAD/auto mode
+TEXT_COLOR     = "#e2e8f0"
+SUBTEXT_COLOR  = "#94a3b8"
+SUCCESS_COLOR  = "#22c55e"
+WARN_COLOR     = "#f59e0b"
 FONT_MAIN      = ("Segoe UI", 10)
 FONT_TITLE     = ("Segoe UI", 12, "bold")
 FONT_MONO      = ("Consolas", 10)
+FONT_SMALL     = ("Segoe UI", 9)
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Face Analysis + Speech Translator")
+        self.title("Face Analysis + Speech Translator  v2")
         self.configure(bg=BG_COLOR)
         self.resizable(True, True)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # ── Module instances ─────────────────────────────────────────────────
+        # ── Modules ──────────────────────────────────────────────────────────
         self._face_analyzer  = FaceAnalyzer()
-        self._speech_handler = None    # built after language selection
-        self._translator     = None    # built after language selection
+        self._speech_handler = None
+        self._translator     = None
         self._tts_handler    = TTSHandler()
 
         # ── State ────────────────────────────────────────────────────────────
         self._webcam_running  = False
         self._model_loaded    = False
-        self._recording       = False
+        self._recording       = False     # push-to-record active
+        self._vad_on          = False     # VAD auto mode active
 
-        # ── Build UI ─────────────────────────────────────────────────────────
+        # ── Build UI + start services ─────────────────────────────────────────
         self._build_ui()
-
-        # ── Start background tasks ────────────────────────────────────────────
         self._start_webcam()
         self._load_whisper_async()
+        self._start_energy_meter()
 
-    # ════════════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════
     #  UI Construction
-    # ════════════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════
 
     def _build_ui(self):
-        # ── Title bar ─────────────────────────────────────────────────────────
+        # Title bar
         title_bar = tk.Frame(self, bg=ACCENT, pady=6)
         title_bar.pack(fill=tk.X)
         tk.Label(
@@ -89,15 +86,16 @@ class App(tk.Tk):
             font=("Segoe UI", 13, "bold"),
             bg=ACCENT, fg="white",
         ).pack(side=tk.LEFT, padx=12)
+        tk.Label(
+            title_bar, text="v2",
+            font=("Segoe UI", 9), bg=ACCENT, fg="#c4b5fd",
+        ).pack(side=tk.LEFT)
 
-        # ── Main content frame ────────────────────────────────────────────────
+        # Main content
         content = tk.Frame(self, bg=BG_COLOR)
         content.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Left column: webcam
         self._build_webcam_panel(content)
-
-        # Right column: controls + transcript
         self._build_control_panel(content)
 
     # ── Webcam Panel ──────────────────────────────────────────────────────────
@@ -108,16 +106,16 @@ class App(tk.Tk):
 
         tk.Label(
             left, text="📷  Live Feed",
-            font=FONT_TITLE, bg=BG_COLOR, fg=TEXT_COLOR
+            font=FONT_TITLE, bg=BG_COLOR, fg=TEXT_COLOR,
         ).pack(anchor=tk.W, pady=(0, 4))
 
-        cam_frame = tk.Frame(left, bg="#000000", bd=2, relief=tk.SUNKEN)
+        cam_frame = tk.Frame(left, bg="#000", bd=2, relief=tk.SUNKEN)
         cam_frame.pack(fill=tk.BOTH, expand=True)
 
-        self._cam_label = tk.Label(cam_frame, bg="#000000")
+        self._cam_label = tk.Label(cam_frame, bg="#000")
         self._cam_label.pack(fill=tk.BOTH, expand=True)
 
-        # Age/gender info bar below video
+        # Face info bar
         self._face_info_var = tk.StringVar(value="No face detected")
         tk.Label(
             left,
@@ -126,44 +124,56 @@ class App(tk.Tk):
             anchor=tk.W, padx=8, pady=4,
         ).pack(fill=tk.X, pady=(4, 0))
 
-    # ── Control / Translation Panel ───────────────────────────────────────────
+        # Mic energy bar
+        energy_row = tk.Frame(left, bg=BG_COLOR)
+        energy_row.pack(fill=tk.X, pady=(4, 0))
+        tk.Label(
+            energy_row, text="🎤 Mic:",
+            font=FONT_SMALL, bg=BG_COLOR, fg=SUBTEXT_COLOR,
+        ).pack(side=tk.LEFT)
+        self._energy_bar = ttk.Progressbar(
+            energy_row, orient=tk.HORIZONTAL, length=200, mode="determinate"
+        )
+        self._energy_bar.pack(side=tk.LEFT, padx=6)
+        self._energy_var = tk.StringVar(value="0.000")
+        tk.Label(
+            energy_row, textvariable=self._energy_var,
+            font=FONT_SMALL, bg=BG_COLOR, fg=SUBTEXT_COLOR, width=5,
+        ).pack(side=tk.LEFT)
+
+    # ── Control Panel ─────────────────────────────────────────────────────────
 
     def _build_control_panel(self, parent):
-        right = tk.Frame(parent, bg=BG_COLOR, width=360)
+        right = tk.Frame(parent, bg=BG_COLOR, width=370)
         right.pack(side=tk.LEFT, fill=tk.BOTH, padx=(5, 0))
         right.pack_propagate(False)
 
-        # ── Language selection ────────────────────────────────────────────────
+        # ── Language settings ─────────────────────────────────────────────────
         lang_frame = tk.LabelFrame(
             right, text=" 🌐  Language Settings ",
             font=FONT_MAIN, bg=PANEL_COLOR, fg=TEXT_COLOR,
             bd=1, labelanchor=tk.NW, padx=8, pady=8,
         )
-        lang_frame.pack(fill=tk.X, pady=(0, 8))
+        lang_frame.pack(fill=tk.X, pady=(0, 6))
 
         lang_names = list(config.SUPPORTED_LANGUAGES.keys())
 
-        # Source language
         tk.Label(lang_frame, text="Source (Speaker):", font=FONT_MAIN,
                  bg=PANEL_COLOR, fg=SUBTEXT_COLOR).grid(row=0, column=0, sticky=tk.W, pady=2)
         self._src_lang_var = tk.StringVar(value="Telugu")
-        src_combo = ttk.Combobox(
+        ttk.Combobox(
             lang_frame, textvariable=self._src_lang_var,
             values=lang_names, state="readonly", width=14,
-        )
-        src_combo.grid(row=0, column=1, padx=(8, 0), pady=2, sticky=tk.W)
+        ).grid(row=0, column=1, padx=(8, 0), pady=2, sticky=tk.W)
 
-        # Target language
         tk.Label(lang_frame, text="Target (You):", font=FONT_MAIN,
                  bg=PANEL_COLOR, fg=SUBTEXT_COLOR).grid(row=1, column=0, sticky=tk.W, pady=2)
         self._tgt_lang_var = tk.StringVar(value="Hindi")
-        tgt_combo = ttk.Combobox(
+        ttk.Combobox(
             lang_frame, textvariable=self._tgt_lang_var,
             values=lang_names, state="readonly", width=14,
-        )
-        tgt_combo.grid(row=1, column=1, padx=(8, 0), pady=2, sticky=tk.W)
+        ).grid(row=1, column=1, padx=(8, 0), pady=2, sticky=tk.W)
 
-        # Apply button
         tk.Button(
             lang_frame, text="Apply",
             font=FONT_MAIN, bg=ACCENT, fg="white",
@@ -175,46 +185,97 @@ class App(tk.Tk):
         mode_frame = tk.LabelFrame(
             right, text=" 🔊  Output Mode ",
             font=FONT_MAIN, bg=PANEL_COLOR, fg=TEXT_COLOR,
-            bd=1, labelanchor=tk.NW, padx=8, pady=8,
+            bd=1, labelanchor=tk.NW, padx=8, pady=6,
         )
-        mode_frame.pack(fill=tk.X, pady=(0, 8))
+        mode_frame.pack(fill=tk.X, pady=(0, 6))
 
         self._output_mode_var = tk.StringVar(value="both")
-        modes = [("Transcript only", "transcript"),
-                 ("Audio only",      "audio"),
-                 ("Both",            "both")]
-        for i, (label, value) in enumerate(modes):
+        for i, (lbl, val) in enumerate([
+            ("Transcript", "transcript"),
+            ("Audio only", "audio"),
+            ("Both",       "both"),
+        ]):
             tk.Radiobutton(
-                mode_frame, text=label, variable=self._output_mode_var,
-                value=value, font=FONT_MAIN,
+                mode_frame, text=lbl, variable=self._output_mode_var,
+                value=val, font=FONT_MAIN,
                 bg=PANEL_COLOR, fg=TEXT_COLOR,
                 selectcolor=PANEL_COLOR, activebackground=PANEL_COLOR,
             ).grid(row=0, column=i, padx=4)
 
-        # ── Recording controls ────────────────────────────────────────────────
-        rec_frame = tk.Frame(right, bg=BG_COLOR)
-        rec_frame.pack(fill=tk.X, pady=(0, 8))
+        # ── VAD settings ──────────────────────────────────────────────────────
+        vad_settings = tk.LabelFrame(
+            right, text=" 🎙  Voice Activity Detection ",
+            font=FONT_MAIN, bg=PANEL_COLOR, fg=TEXT_COLOR,
+            bd=1, labelanchor=tk.NW, padx=8, pady=6,
+        )
+        vad_settings.pack(fill=tk.X, pady=(0, 6))
 
+        # Threshold slider
+        tk.Label(vad_settings, text="Sensitivity:", font=FONT_SMALL,
+                 bg=PANEL_COLOR, fg=SUBTEXT_COLOR).grid(row=0, column=0, sticky=tk.W)
+        self._vad_threshold_var = tk.DoubleVar(value=config.VAD_ENERGY_THRESHOLD)
+        tk.Scale(
+            vad_settings,
+            variable=self._vad_threshold_var,
+            from_=0.001, to=0.05, resolution=0.001,
+            orient=tk.HORIZONTAL, length=130,
+            bg=PANEL_COLOR, fg=TEXT_COLOR,
+            troughcolor="#444466", highlightthickness=0,
+            command=self._on_threshold_change,
+        ).grid(row=0, column=1, padx=(4, 0))
+
+        tk.Label(vad_settings, text="Silence timeout (s):", font=FONT_SMALL,
+                 bg=PANEL_COLOR, fg=SUBTEXT_COLOR).grid(row=1, column=0, sticky=tk.W, pady=(4, 0))
+        self._vad_silence_var = tk.DoubleVar(value=config.VAD_SILENCE_DURATION)
+        tk.Scale(
+            vad_settings,
+            variable=self._vad_silence_var,
+            from_=0.5, to=4.0, resolution=0.5,
+            orient=tk.HORIZONTAL, length=130,
+            bg=PANEL_COLOR, fg=TEXT_COLOR,
+            troughcolor="#444466", highlightthickness=0,
+            command=self._on_silence_change,
+        ).grid(row=1, column=1, padx=(4, 0), pady=(4, 0))
+
+        # ── Recording buttons ─────────────────────────────────────────────────
+        btn_frame = tk.Frame(right, bg=BG_COLOR)
+        btn_frame.pack(fill=tk.X, pady=(0, 6))
+
+        # Auto-listen (VAD) toggle
+        self._vad_btn = tk.Button(
+            btn_frame,
+            text="🤖  AUTO LISTEN (VAD)",
+            font=("Segoe UI", 10, "bold"),
+            bg=VAD_COLOR, fg="white",
+            activebackground="#0284c7",
+            relief=tk.FLAT, padx=8, pady=6,
+            command=self._toggle_vad,
+            cursor="hand2",
+        )
+        self._vad_btn.pack(fill=tk.X, pady=(0, 4))
+
+        # Manual record
         self._rec_btn = tk.Button(
-            rec_frame,
-            text="🎙  START RECORDING",
-            font=("Segoe UI", 11, "bold"),
-            bg=REC_COLOR, fg="white",
-            activebackground="#b91c1c",
-            relief=tk.FLAT, padx=10, pady=8,
+            btn_frame,
+            text="🎙  HOLD TO RECORD (Manual)",
+            font=("Segoe UI", 10, "bold"),
+            bg="#374151", fg=TEXT_COLOR,
+            activebackground="#4b5563",
+            relief=tk.FLAT, padx=8, pady=6,
             command=self._toggle_recording,
             cursor="hand2",
         )
         self._rec_btn.pack(fill=tk.X)
 
+        # Status indicator
         self._rec_status_var = tk.StringVar(value="⬤  Idle")
         tk.Label(
-            rec_frame,
+            btn_frame,
             textvariable=self._rec_status_var,
             font=FONT_MAIN, bg=BG_COLOR, fg=SUBTEXT_COLOR,
-        ).pack(anchor=tk.W, pady=(2, 0))
+        ).pack(anchor=tk.W, pady=(4, 0))
 
-        # ── Transcript box ────────────────────────────────────────────────────
+        # ── Transcript area ───────────────────────────────────────────────────
         tk.Label(
             right, text="📝  Transcript / Translation",
             font=FONT_TITLE, bg=BG_COLOR, fg=TEXT_COLOR,
@@ -230,14 +291,22 @@ class App(tk.Tk):
         )
         self._transcript_box.pack(fill=tk.BOTH, expand=True)
 
-        tk.Button(
-            right, text="Clear",
-            font=FONT_MAIN, bg=PANEL_COLOR, fg=SUBTEXT_COLOR,
-            relief=tk.FLAT, command=self._clear_transcript,
-            cursor="hand2",
-        ).pack(anchor=tk.E, pady=(4, 0))
+        btn_row = tk.Frame(right, bg=BG_COLOR)
+        btn_row.pack(fill=tk.X, pady=(4, 0))
 
-        # ── Status bar ────────────────────────────────────────────────────────
+        tk.Button(
+            btn_row, text="Clear",
+            font=FONT_SMALL, bg=PANEL_COLOR, fg=SUBTEXT_COLOR,
+            relief=tk.FLAT, command=self._clear_transcript, cursor="hand2",
+        ).pack(side=tk.RIGHT)
+
+        tk.Button(
+            btn_row, text="📂 Open outputs/",
+            font=FONT_SMALL, bg=PANEL_COLOR, fg=SUBTEXT_COLOR,
+            relief=tk.FLAT, command=self._open_outputs, cursor="hand2",
+        ).pack(side=tk.RIGHT, padx=4)
+
+        # Status bar
         self._status_var = tk.StringVar(value="⏳  Loading Whisper model…")
         tk.Label(
             right,
@@ -246,9 +315,9 @@ class App(tk.Tk):
             anchor=tk.W,
         ).pack(fill=tk.X, pady=(6, 0))
 
-    # ════════════════════════════════════════════════════════════════════════════
-    #  Webcam Loop
-    # ════════════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════
+    #  Webcam Feed
+    # ══════════════════════════════════════════════════════════════════════════
 
     def _start_webcam(self):
         self._face_analyzer.start()
@@ -256,58 +325,143 @@ class App(tk.Tk):
         self._update_webcam()
 
     def _update_webcam(self):
-        """Called every ~33ms via after() to refresh the webcam frame."""
         if not self._webcam_running:
             return
-
         frame, results = self._face_analyzer.get_latest()
 
         if frame is not None:
-            # Convert BGR → RGB for PIL
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            img = Image.fromarray(rgb)
-            img = img.resize((480, 360), Image.LANCZOS)
+            rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img   = Image.fromarray(rgb).resize((480, 360), Image.LANCZOS)
             photo = ImageTk.PhotoImage(image=img)
             self._cam_label.configure(image=photo)
-            self._cam_label.image = photo  # keep reference
+            self._cam_label.image = photo
 
-            # Update face info bar
             if results:
-                parts = [f"Person {i+1}: {r['gender']}, ~{r['age']} yrs"
-                         for i, r in enumerate(results)]
+                parts = [
+                    f"{'Male' if 'man' in r['gender'].lower() else 'Female'}, "
+                    f"~{r['age']}y  ({r.get('confidence', 0):.0f}% conf)"
+                    for r in results
+                ]
                 self._face_info_var.set("  |  ".join(parts))
             else:
                 self._face_info_var.set("No face detected")
 
-        self.after(33, self._update_webcam)   # ~30 FPS
+        self.after(33, self._update_webcam)
 
-    # ════════════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════
+    #  Mic Energy Meter
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _start_energy_meter(self):
+        """Sample mic energy every 100ms and update the progress bar."""
+        self._energy_stream = None
+        self._energy_rms    = 0.0
+        self._energy_running = True
+
+        def _read():
+            try:
+                with sd.InputStream(
+                    samplerate=config.AUDIO_SAMPLE_RATE,
+                    channels=1, dtype="float32",
+                    blocksize=int(config.AUDIO_SAMPLE_RATE * 0.1),
+                ) as stream:
+                    while self._energy_running:
+                        block, _ = stream.read(int(config.AUDIO_SAMPLE_RATE * 0.1))
+                        self._energy_rms = float(np.sqrt(np.mean(block ** 2)))
+            except Exception:
+                pass
+
+        threading.Thread(target=_read, daemon=True).start()
+        self._refresh_energy()
+
+    def _refresh_energy(self):
+        rms = self._energy_rms
+        # Scale 0–0.1 to 0–100
+        pct = min(rms * 1000, 100)
+        self._energy_bar["value"] = pct
+        self._energy_var.set(f"{rms:.3f}")
+
+        # Color threshold indicator
+        threshold = self._vad_threshold_var.get()
+        self._energy_bar.configure(
+            style="Green.Horizontal.TProgressbar"
+            if rms > threshold else "TProgressbar"
+        )
+        self.after(100, self._refresh_energy)
+
+    # ══════════════════════════════════════════════════════════════════════════
     #  Whisper Model Loading
-    # ════════════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════
 
     def _load_whisper_async(self):
-        """Load Whisper model in a background thread."""
-        src_lang = config.SUPPORTED_LANGUAGES.get(self._src_lang_var.get(),
-                                                   config.DEFAULT_SOURCE_LANG)
-        self._speech_handler = SpeechHandler(source_lang=src_lang)
-        self._translator     = Translator(
-            source=src_lang,
-            target=config.SUPPORTED_LANGUAGES.get(self._tgt_lang_var.get(),
-                                                   config.DEFAULT_TARGET_LANG),
+        src_lang = config.SUPPORTED_LANGUAGES.get(
+            self._src_lang_var.get(), config.DEFAULT_SOURCE_LANG
         )
+        tgt_lang = config.SUPPORTED_LANGUAGES.get(
+            self._tgt_lang_var.get(), config.DEFAULT_TARGET_LANG
+        )
+        self._speech_handler = SpeechHandler(source_lang=src_lang)
+        self._translator     = Translator(source=src_lang, target=tgt_lang)
 
         def _load():
             self._speech_handler.load_model(
                 on_progress=lambda msg: self.after(0, self._set_status, msg)
             )
             self._model_loaded = True
-            self.after(0, self._set_status, "✅  Ready — model loaded")
+            self.after(0, self._set_status, "✅  Ready — Whisper loaded")
 
         threading.Thread(target=_load, daemon=True).start()
 
-    # ════════════════════════════════════════════════════════════════════════════
-    #  Recording & Translation
-    # ════════════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════
+    #  VAD — Auto Listen Mode
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _toggle_vad(self):
+        if self._vad_on:
+            self._stop_vad()
+        else:
+            self._start_vad()
+
+    def _start_vad(self):
+        if not self._model_loaded:
+            messagebox.showwarning("Not Ready", "Whisper model is still loading.")
+            return
+        if self._recording:
+            messagebox.showwarning("Busy", "Stop manual recording first.")
+            return
+        self._vad_on = True
+        config.VAD_ENERGY_THRESHOLD = self._vad_threshold_var.get()
+        config.VAD_SILENCE_DURATION = self._vad_silence_var.get()
+        self._vad_btn.configure(
+            text="⏹  STOP AUTO LISTEN",
+            bg="#b91c1c", activebackground="#991b1b",
+        )
+        self._rec_status_var.set("👂  Listening for speech…")
+        self._set_status("VAD active — speak now")
+        self._speech_handler.start_vad(on_transcript=self._on_vad_transcript)
+
+    def _stop_vad(self):
+        self._vad_on = False
+        self._speech_handler.stop_vad()
+        self._vad_btn.configure(
+            text="🤖  AUTO LISTEN (VAD)", bg=VAD_COLOR,
+            activebackground="#0284c7",
+        )
+        self._rec_status_var.set("⬤  Idle")
+        self._set_status("VAD stopped")
+
+    def _on_vad_transcript(self, original: str):
+        """Called from VAD background thread when speech segment is transcribed."""
+        self.after(0, self._rec_status_var.set, "⚙️  Translating…")
+        translated = self._translator.translate(original) if self._translator else original
+        src_code   = config.SUPPORTED_LANGUAGES.get(self._src_lang_var.get(), "te")
+        tgt_code   = config.SUPPORTED_LANGUAGES.get(self._tgt_lang_var.get(), "hi")
+        self.after(0, self._handle_output, original, translated, src_code, tgt_code)
+        self.after(0, self._rec_status_var.set, "👂  Listening for speech…")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  Manual Push-to-Record
+    # ══════════════════════════════════════════════════════════════════════════
 
     def _toggle_recording(self):
         if self._recording:
@@ -317,61 +471,62 @@ class App(tk.Tk):
 
     def _start_recording(self):
         if not self._model_loaded:
-            messagebox.showwarning("Not Ready", "Whisper model is still loading. Please wait.")
+            messagebox.showwarning("Not Ready", "Whisper model is still loading.")
+            return
+        if self._vad_on:
+            messagebox.showwarning("Busy", "Stop Auto Listen first.")
             return
         self._recording = True
-        self._rec_btn.configure(text="⏹  STOP RECORDING", bg=STOP_COLOR,
-                                activebackground="#15803d")
+        self._rec_btn.configure(
+            text="⏹  CLICK TO STOP", bg=REC_COLOR,
+            activebackground="#b91c1c",
+        )
         self._rec_status_var.set("🔴  Recording…")
-        self._set_status("Recording… speak now")
+        self._set_status("Recording — speak now")
         self._speech_handler.start_recording()
 
     def _stop_recording(self):
         self._recording = False
-        self._rec_btn.configure(text="🎙  START RECORDING", bg=REC_COLOR,
-                                activebackground="#b91c1c")
-        self._rec_status_var.set("⏳  Processing…")
+        self._rec_btn.configure(
+            text="🎙  HOLD TO RECORD (Manual)", bg="#374151",
+            activebackground="#4b5563",
+        )
+        self._rec_status_var.set("⚙️  Processing…")
         self._set_status("Transcribing…")
+        threading.Thread(target=self._process_manual_recording, daemon=True).start()
 
-        # Run stop + transcribe + translate in background thread
-        threading.Thread(target=self._process_recording, daemon=True).start()
-
-    def _process_recording(self):
-        """Background: stop → transcribe → translate → output."""
-        # 1. Transcribe
+    def _process_manual_recording(self):
         original = self._speech_handler.stop_recording()
         if not original:
             self.after(0, self._set_status, "⚠️  No speech detected")
             self.after(0, self._rec_status_var.set, "⬤  Idle")
             return
-
         self.after(0, self._set_status, "Translating…")
-
-        # 2. Translate
         translated = self._translator.translate(original) if self._translator else original
-
-        # 3. Output
-        src_code = config.SUPPORTED_LANGUAGES.get(self._src_lang_var.get(), "te")
-        tgt_code = config.SUPPORTED_LANGUAGES.get(self._tgt_lang_var.get(), "hi")
-        mode     = self._output_mode_var.get()
-
-        # Always append to transcript UI
-        self.after(0, self._append_transcript, original, translated, src_code, tgt_code)
-
-        if mode in ("transcript", "both"):
-            saved = self._tts_handler.save_transcript(original, translated, src_code, tgt_code)
-            self.after(0, self._set_status, f"✅  Transcript saved → {os.path.basename(saved)}")
-
-        if mode in ("audio", "both"):
-            audio_path = self._tts_handler.speak_and_save(translated, lang=tgt_code, play=True)
-            self.after(0, self._set_status,
-                       f"✅  Audio saved → {os.path.basename(audio_path)}")
-
+        src_code   = config.SUPPORTED_LANGUAGES.get(self._src_lang_var.get(), "te")
+        tgt_code   = config.SUPPORTED_LANGUAGES.get(self._tgt_lang_var.get(), "hi")
+        self.after(0, self._handle_output, original, translated, src_code, tgt_code)
         self.after(0, self._rec_status_var.set, "⬤  Idle")
 
-    # ════════════════════════════════════════════════════════════════════════════
+    # ── Shared output handler ─────────────────────────────────────────────────
+
+    def _handle_output(self, original, translated, src_code, tgt_code):
+        """Display transcript in UI and optionally save/play."""
+        self._append_transcript(original, translated, src_code, tgt_code)
+        mode = self._output_mode_var.get()
+
+        if mode in ("transcript", "both"):
+            saved = self._tts_handler.save_transcript(
+                original, translated, src_code, tgt_code
+            )
+            self._set_status(f"✅  Saved → {os.path.basename(saved)}")
+
+        if mode in ("audio", "both"):
+            self._tts_handler.speak_and_save(translated, lang=tgt_code, play=True)
+
+    # ══════════════════════════════════════════════════════════════════════════
     #  Language Settings
-    # ════════════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════
 
     def _apply_language_settings(self):
         src_name = self._src_lang_var.get()
@@ -381,29 +536,32 @@ class App(tk.Tk):
 
         if src_code == tgt_code:
             messagebox.showwarning("Same Language",
-                                   "Source and target language must be different.")
+                                   "Source and target must be different.")
             return
-
         if self._speech_handler:
             self._speech_handler.source_lang = src_code
         if self._translator:
             self._translator.update_languages(src_code, tgt_code)
+        self._set_status(f"✅  Languages: {src_name} → {tgt_name}")
 
-        self._set_status(f"✅  Languages updated: {src_name} → {tgt_name}")
+    def _on_threshold_change(self, _=None):
+        config.VAD_ENERGY_THRESHOLD = self._vad_threshold_var.get()
 
-    # ════════════════════════════════════════════════════════════════════════════
-    #  Transcript UI Helpers
-    # ════════════════════════════════════════════════════════════════════════════
+    def _on_silence_change(self, _=None):
+        config.VAD_SILENCE_DURATION = self._vad_silence_var.get()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  Transcript Helpers
+    # ══════════════════════════════════════════════════════════════════════════
 
     def _append_transcript(self, original, translated, src_code, tgt_code):
-        self._transcript_box.configure(state=tk.NORMAL)
-        import datetime
         ts = datetime.datetime.now().strftime("%H:%M:%S")
+        self._transcript_box.configure(state=tk.NORMAL)
         self._transcript_box.insert(tk.END,
             f"\n[{ts}]\n"
             f"🎤 ({src_code}): {original}\n"
             f"🌐 ({tgt_code}): {translated}\n"
-            f"{'─' * 40}\n"
+            f"{'─' * 42}\n"
         )
         self._transcript_box.configure(state=tk.DISABLED)
         self._transcript_box.see(tk.END)
@@ -413,17 +571,24 @@ class App(tk.Tk):
         self._transcript_box.delete("1.0", tk.END)
         self._transcript_box.configure(state=tk.DISABLED)
 
+    def _open_outputs(self):
+        import subprocess
+        subprocess.Popen(f'explorer "{os.path.abspath("outputs")}"')
+
     def _set_status(self, msg: str):
         self._status_var.set(msg)
 
-    # ════════════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════
     #  Cleanup
-    # ════════════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════
 
     def _on_close(self):
-        self._webcam_running = False
+        self._webcam_running  = False
+        self._energy_running  = False
         self._face_analyzer.stop()
-        if self._speech_handler and self._speech_handler.is_recording():
+        if self._vad_on:
+            self._speech_handler.stop_vad()
+        if self._recording:
             self._speech_handler.stop_recording()
         self._tts_handler.stop_playback()
         self.destroy()

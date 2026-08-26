@@ -19,28 +19,34 @@ SUPPORTED_LANGUAGES = {
     "Urdu":      "ur",
 }
 
-# ── Whisper Settings (battery-friendly defaults) ───────────────────────────────
+# ── Whisper Settings ───────────────────────────────────────────────────────────
 # Sizes: tiny < base < small < medium < large
-# Recommendation for degraded battery / CPU-only:
-#   "tiny"  → very fast, less accurate
-#   "base"  → good balance for most Indian languages
+# Recommendation for CPU-only / degraded battery: "base"
 WHISPER_MODEL_SIZE = "base"
 
 # ── Face Analysis Settings ─────────────────────────────────────────────────────
-# Analyze every Nth frame to reduce CPU load (higher = less frequent = less power)
+# Analyze every Nth frame (higher = less frequent = less battery drain)
 FACE_ANALYSIS_EVERY_N_FRAMES = 5
 
 # Webcam index (0 = default built-in camera)
 WEBCAM_INDEX = 0
 
-# ── Output Settings ────────────────────────────────────────────────────────────
-# "transcript" → show translated text in UI panel
-# "audio"      → save translated speech as .mp3
-# "both"       → do both (toggle in UI)
-DEFAULT_OUTPUT_MODE = "both"
+# Minimum gender confidence % to show a result (0–100)
+# Below this threshold the detection is silently discarded
+FACE_CONFIDENCE_THRESHOLD = 60   # 60% confidence required
 
-TRANSCRIPT_OUTPUT_DIR = "outputs/transcripts"
-AUDIO_OUTPUT_DIR      = "outputs/audio"
+# ── VAD (Voice Activity Detection) Settings ────────────────────────────────────
+# RMS energy threshold: values above this = speech, below = silence
+# Typical quiet room: 0.005–0.01   Loud room: 0.02–0.05
+VAD_ENERGY_THRESHOLD = 0.01
+
+# Seconds of continuous silence after which a speech segment is finalized
+VAD_SILENCE_DURATION = 1.5
+
+# ── Output Settings ────────────────────────────────────────────────────────────
+DEFAULT_OUTPUT_MODE     = "both"
+TRANSCRIPT_OUTPUT_DIR   = "outputs/transcripts"
+AUDIO_OUTPUT_DIR        = "outputs/audio"
 
 # ── Audio Recording Settings ───────────────────────────────────────────────────
 AUDIO_SAMPLE_RATE  = 16000   # Hz — required by Whisper
