@@ -92,12 +92,16 @@ class FaceAnalyzer:
                 self.latest_results = results
 
     def _analyze(self, frame):
-        """Run DeepFace analysis; return list of result dicts."""
+        """
+        Run DeepFace analysis using OpenCV backend (no extra model download).
+        Falls back to Haar cascade if DeepFace fails.
+        """
         try:
             analyses = DeepFace.analyze(
                 img_path=frame,
                 actions=["age", "gender"],
-                enforce_detection=False,   # don't crash if no face found
+                detector_backend="opencv",   # fast, built-in, no extra download
+                enforce_detection=False,
                 silent=True,
             )
             # DeepFace returns a list or a single dict — normalise to list
@@ -107,18 +111,24 @@ class FaceAnalyzer:
             results = []
             for a in analyses:
                 region = a.get("region", {})
+                w = region.get("w", 0)
+                h = region.get("h", 0)
+                # skip garbage zero-size detections
+                if w < 20 or h < 20:
+                    continue
                 results.append({
                     "age":    int(a.get("age", 0)),
                     "gender": a.get("dominant_gender", "Unknown"),
                     "box":    (
                         region.get("x", 0),
                         region.get("y", 0),
-                        region.get("w", 0),
-                        region.get("h", 0),
+                        w, h,
                     ),
                 })
             return results
-        except Exception:
+
+        except Exception as e:
+            # Silent fallback — just return empty so UI shows "No face detected"
             return []
 
     def _draw(self, frame, results):

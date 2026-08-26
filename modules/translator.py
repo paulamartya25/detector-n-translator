@@ -37,12 +37,39 @@ class Translator:
     def translate(self, text: str) -> str:
         """
         Translate text from source language to target language.
+        Automatically chunks long texts to stay within Google Translate limits.
         Returns translated string, or original on error.
         """
         if not text or not text.strip():
             return ""
+        text = text.strip()
+
+        # Google Translate free API limit is ~4500 chars per request
+        MAX_CHARS = 4500
+        if len(text) <= MAX_CHARS:
+            return self._translate_chunk(text)
+
+        # Split long text into sentence-based chunks
+        import re
+        sentences = re.split(r'(?<=[।.!?])\s+', text)
+        chunks, current = [], ""
+        for sentence in sentences:
+            if len(current) + len(sentence) + 1 <= MAX_CHARS:
+                current = (current + " " + sentence).strip()
+            else:
+                if current:
+                    chunks.append(current)
+                current = sentence
+        if current:
+            chunks.append(current)
+
+        translated_parts = [self._translate_chunk(c) for c in chunks]
+        return " ".join(translated_parts)
+
+    def _translate_chunk(self, text: str) -> str:
+        """Translate a single chunk (under the API char limit)."""
         try:
-            return self._translator.translate(text.strip())
+            return self._translator.translate(text)
         except Exception as e:
             return f"[Translation error: {e}]"
 
