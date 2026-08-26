@@ -33,7 +33,8 @@ WEBCAM_INDEX = 0
 
 # Minimum gender confidence % to show a result (0–100)
 # Below this threshold the detection is silently discarded
-FACE_CONFIDENCE_THRESHOLD = 60   # 60% confidence required
+# Lower this value if face is not being detected (try 40 first, then 30)
+FACE_CONFIDENCE_THRESHOLD = 40   # 40% confidence required
 
 # ── VAD (Voice Activity Detection) Settings ────────────────────────────────────
 # RMS energy threshold: values above this = speech, below = silence

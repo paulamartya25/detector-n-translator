@@ -152,16 +152,31 @@ class FaceAnalyzer:
                     if w < 30 or h < 30:
                         continue
 
-                    # Gender confidence check
-                    gender_scores  = a.get("gender", {})
+                    # Gender confidence — handle key case mismatch between
+                    # dominant_gender ("Man") and gender dict keys ("man")
+                    gender_scores   = a.get("gender", {})
                     dominant_gender = a.get("dominant_gender", "Unknown")
+                    confidence      = 0.0
                     if isinstance(gender_scores, dict):
-                        confidence = gender_scores.get(dominant_gender, 0)
+                        if dominant_gender in gender_scores:
+                            confidence = gender_scores[dominant_gender]
+                        else:
+                            # case-insensitive fallback
+                            for k, v in gender_scores.items():
+                                if k.lower() == dominant_gender.lower():
+                                    confidence = v
+                                    break
+                            else:
+                                # take the maximum score available
+                                confidence = max(gender_scores.values()) if gender_scores else 100
                     else:
-                        confidence = 100  # no score available, trust it
+                        confidence = 100  # no score dict — trust the result
+
+                    # Uncomment the line below to debug detection issues:
+                    # print(f"[Face] {dominant_gender} conf={confidence:.1f}% box=({w}x{h})")
 
                     if confidence < self.CONFIDENCE_THRESHOLD:
-                        continue  # skip low-confidence predictions
+                        continue
 
                     results.append({
                         "age":        int(a.get("age", 0)),
