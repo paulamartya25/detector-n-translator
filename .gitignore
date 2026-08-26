@@ -1,0 +1,22 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Whisper model cache
+*.pt
+
+# Temp audio
+outputs/_temp_recording.wav
+
+# Output files (keep directory structure, ignore content)
+outputs/audio/*.mp3
+outputs/transcripts/*.txt
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
