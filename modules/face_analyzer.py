@@ -142,6 +142,14 @@ class FaceAnalyzer:
                 if isinstance(analyses, dict):
                     analyses = [analyses]
 
+                # DEBUG — shows raw output from DeepFace (remove later)
+                print(f"[Face DEBUG] backend={backend}, got {len(analyses)} result(s)")
+                for i, a in enumerate(analyses):
+                    r = a.get("region", {})
+                    print(f"  result[{i}]: age={a.get('age')}, gender={a.get('dominant_gender')}, "
+                          f"box=({r.get('w',0)}x{r.get('h',0)}), "
+                          f"gender_scores={a.get('gender')}")
+
                 results = []
                 for a in analyses:
                     region = a.get("region", {})
@@ -173,7 +181,7 @@ class FaceAnalyzer:
                         confidence = 100  # no score dict — trust the result
 
                     # Uncomment the line below to debug detection issues:
-                    # print(f"[Face] {dominant_gender} conf={confidence:.1f}% box=({w}x{h})")
+                    print(f"[Face] {dominant_gender} conf={confidence:.1f}% box=({w}x{h})")
 
                     if confidence < self.CONFIDENCE_THRESHOLD:
                         continue
