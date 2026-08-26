@@ -3,6 +3,10 @@ opencv-python>=4.8.0
 deepface>=0.0.93
 tf-keras>=2.15.0
 
+# ── Best accuracy face analysis (InsightFace + ONNX Runtime) ──────────────────
+insightface>=0.7.3          # SCRFD face detection + Age/Gender (best accuracy)
+onnxruntime>=1.16.0         # ONNX inference engine (CPU, no GPU needed)
+
 # ── Face detection backend (optional but recommended) ─────────────────────────
 mediapipe>=0.10.0          # faster face detection; falls back to opencv if missing
 
