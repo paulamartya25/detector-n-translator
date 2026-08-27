@@ -168,8 +168,9 @@ class FaceAnalyzer:
         # InsightFace
         self._if_app      = None
 
-        # Custom Indian age model (ONNX) — loaded if file exists in models/
-        self._custom_age_sess = None
+        # Custom Indian age model — loaded if file exists in models/
+        self._custom_age_sess  = None   # ONNX session
+        self._custom_age_torch = None   # PyTorch model
         self._try_load_custom_age_model()
 
         # OpenCV DNN fallback
@@ -215,32 +216,71 @@ class FaceAnalyzer:
         return frame, results
 
     # -- Custom Indian Age Model ---------------------------------------------------
+    # Supports both PyTorch .pt and ONNX .onnx formats (auto-detects)
+    _CUSTOM_AGE_PT   = os.path.join(_MODELS_DIR, "age_best.pt")
+    _CUSTOM_AGE_ONNX = os.path.join(_MODELS_DIR, "age_estimator_indian.onnx")
 
     def _try_load_custom_age_model(self):
         """
-        Load custom Indian-optimised age ONNX model if it exists.
-        File: models/age_estimator_indian.onnx  (download from Colab after training)
-        Falls back silently to InsightFace built-in age if file not present.
+        Load custom Indian-optimised age model.
+        Tries in order:
+          1. models/age_estimator_indian.onnx  (fastest)
+          2. models/age_best.pt                (PyTorch, fallback)
+        Falls back to InsightFace built-in age if neither exists.
         """
-        if not os.path.exists(self._CUSTOM_AGE_MODEL):
-            print("[FaceAnalyzer] No custom age model found — using InsightFace default")
-            print(f"[FaceAnalyzer] (copy age_estimator_indian.onnx to models/ to enable)")
-            return
-        try:
-            import onnxruntime as ort
-            self._custom_age_sess = ort.InferenceSession(
-                self._CUSTOM_AGE_MODEL,
-                providers=["CPUExecutionProvider"],
-            )
-            size_mb = os.path.getsize(self._CUSTOM_AGE_MODEL) / 1e6
-            print(f"[FaceAnalyzer] Custom Indian age model loaded ({size_mb:.1f} MB)")
-        except Exception as e:
-            print(f"[FaceAnalyzer] Custom age model load failed: {e}")
-            self._custom_age_sess = None
+        # Try ONNX first
+        if os.path.exists(self._CUSTOM_AGE_ONNX):
+            try:
+                import onnxruntime as ort
+                self._custom_age_sess = ort.InferenceSession(
+                    self._CUSTOM_AGE_ONNX,
+                    providers=["CPUExecutionProvider"],
+                )
+                size_mb = os.path.getsize(self._CUSTOM_AGE_ONNX) / 1e6
+                print(f"[FaceAnalyzer] Custom age model (ONNX) loaded ({size_mb:.1f} MB)")
+                return
+            except Exception as e:
+                print(f"[FaceAnalyzer] ONNX load failed: {e} — trying .pt fallback")
+
+        # Try PyTorch .pt
+        if os.path.exists(self._CUSTOM_AGE_PT):
+            try:
+                import torch
+                import torch.nn as nn
+                from torchvision import models as tv_models
+
+                class _AgeNet(nn.Module):
+                    def __init__(self):
+                        super().__init__()
+                        base = tv_models.mobilenet_v2(weights=None)
+                        self.features = base.features
+                        self.pool = nn.AdaptiveAvgPool2d(1)
+                        self.head = nn.Sequential(
+                            nn.Dropout(0.3), nn.Linear(1280, 512),
+                            nn.BatchNorm1d(512), nn.ReLU(),
+                            nn.Dropout(0.2), nn.Linear(512, 128),
+                            nn.ReLU(), nn.Linear(128, 1),
+                        )
+                    def forward(self, x):
+                        return self.head(self.pool(self.features(x)).flatten(1)).squeeze(1)
+
+                net = _AgeNet()
+                net.load_state_dict(torch.load(self._CUSTOM_AGE_PT, map_location="cpu"))
+                net.eval()
+                self._custom_age_torch = net
+                size_mb = os.path.getsize(self._CUSTOM_AGE_PT) / 1e6
+                print(f"[FaceAnalyzer] Custom age model (PyTorch .pt) loaded ({size_mb:.1f} MB)")
+                return
+            except Exception as e:
+                print(f"[FaceAnalyzer] PyTorch .pt load failed: {e}")
+
+        print("[FaceAnalyzer] No custom age model found — using InsightFace default")
+        print("[FaceAnalyzer] (copy age_best.pt or age_estimator_indian.onnx to models/)")
 
     def _predict_age_custom(self, face_crop_bgr):
         """
-        Run the custom Indian ONNX age model on a face crop.
+        Run the custom Indian age model on a face crop.
+        Supports both ONNX and PyTorch (.pt) formats.
         face_crop_bgr: numpy array (H, W, 3) BGR uint8
         Returns: int age in years (clamped 1-90)
         """
@@ -250,10 +290,22 @@ class FaceAnalyzer:
         img = cv2.cvtColor(face_crop_bgr, cv2.COLOR_BGR2RGB)
         img = cv2.resize(img, (224, 224)).astype(np.float32) / 255.0
         img = (img - MEAN) / STD
-        img = img.transpose(2, 0, 1)[np.newaxis].astype(np.float32)  # (1,3,224,224)
+        img_np = img.transpose(2, 0, 1)[np.newaxis].astype(np.float32)  # (1,3,224,224)
 
-        result = self._custom_age_sess.run(["age"], {"face_crop": img})
-        return max(1, min(90, int(round(float(result[0][0])))))
+        if self._custom_age_sess is not None:
+            # ONNX path
+            result = self._custom_age_sess.run(["age"], {"face_crop": img_np})
+            age = float(result[0][0])
+        elif self._custom_age_torch is not None:
+            # PyTorch path
+            import torch
+            with torch.no_grad():
+                tensor = torch.from_numpy(img_np)
+                age = float(self._custom_age_torch(tensor).item())
+        else:
+            return 0   # no custom model loaded
+
+        return max(1, min(90, int(round(age))))
 
     # -- InsightFace Loader --------------------------------------------------------
 
@@ -432,7 +484,7 @@ class FaceAnalyzer:
                    if faces_age else face
 
             # ── Age prediction ──────────────────────────────────────────────
-            if self._custom_age_sess is not None:
+            if self._custom_age_sess is not None or self._custom_age_torch is not None:
                 # Use custom Indian-optimised ONNX model (much more accurate!)
                 h_f, w_f = age_frame.shape[:2]
                 pad = 15
