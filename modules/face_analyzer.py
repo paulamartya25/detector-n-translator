@@ -249,27 +249,38 @@ class FaceAnalyzer:
                 import torch.nn as nn
                 from torchvision import models as tv_models
 
+                self._custom_is_v2 = _check_v2(self._CUSTOM_AGE_PT)
+                
                 class _AgeNet(nn.Module):
-                    def __init__(self):
+                    def __init__(self, v2=False):
                         super().__init__()
-                        base = tv_models.mobilenet_v2(weights=None)
-                        self.features = base.features
-                        self.pool = nn.AdaptiveAvgPool2d(1)
-                        self.head = nn.Sequential(
-                            nn.Dropout(0.3), nn.Linear(1280, 512),
-                            nn.BatchNorm1d(512), nn.ReLU(),
-                            nn.Dropout(0.2), nn.Linear(512, 128),
-                            nn.ReLU(), nn.Linear(128, 1),
-                        )
+                        if v2:
+                            from torchvision.models import efficientnet_b3
+                            base = efficientnet_b3(weights=None)
+                            self.features = base.features
+                            self.head = nn.Linear(1536, 1)
+                        else:
+                            base = tv_models.mobilenet_v2(weights=None)
+                            self.features = base.features
+                            self.pool = nn.AdaptiveAvgPool2d(1)
+                            self.head = nn.Sequential(
+                                nn.Dropout(0.3), nn.Linear(1280, 512),
+                                nn.BatchNorm1d(512), nn.ReLU(),
+                                nn.Dropout(0.2), nn.Linear(512, 128),
+                                nn.ReLU(), nn.Linear(128, 1),
+                            )
                     def forward(self, x):
-                        return self.head(self.pool(self.features(x)).flatten(1)).squeeze(1)
+                        x = self.features(x)
+                        if hasattr(self, 'pool'): x = self.pool(x)
+                        else: x = x.mean([2, 3])
+                        return self.head(x.flatten(1)).squeeze(1)
 
-                net = _AgeNet()
+                net = _AgeNet(v2=self._custom_is_v2)
                 net.load_state_dict(torch.load(self._CUSTOM_AGE_PT, map_location="cpu"))
                 net.eval()
                 self._custom_age_torch = net
                 size_mb = os.path.getsize(self._CUSTOM_AGE_PT) / 1e6
-                print(f"[FaceAnalyzer] Custom age model (PyTorch .pt) loaded ({size_mb:.1f} MB)")
+                print(f"[FaceAnalyzer] Custom age model (PyTorch .pt, v2={self._custom_is_v2}) loaded ({size_mb:.1f} MB)")
                 return
             except Exception as e:
                 print(f"[FaceAnalyzer] PyTorch .pt load failed: {e}")
@@ -294,8 +305,8 @@ class FaceAnalyzer:
 
         if self._custom_age_sess is not None:
             # ONNX path
-            result = self._custom_age_sess.run(["age"], {"face_crop": img_np})
-            age = float(result[0][0])
+            res = self._custom_age_sess.run(None, {"input": img_np})
+            age = float(res[1][0] if self._custom_is_v2 else res[0][0])
         elif self._custom_age_torch is not None:
             # PyTorch path
             import torch
