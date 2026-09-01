@@ -1,0 +1,29 @@
+﻿# HuggingFace Spaces requirements
+# Generated for Detector N Translator v3
+
+# Core ML
+torch>=2.0.0
+torchvision>=0.15.0
+openai-whisper
+insightface
+onnxruntime
+
+# Computer Vision
+opencv-python-headless
+Pillow
+
+# Web UI
+gradio>=3.50.0
+
+# Translation & TTS
+deep-translator
+gTTS
+pyttsx3
+
+# Audio
+soundfile
+pydub
+
+# Utilities
+numpy
+pandas
